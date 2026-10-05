@@ -1,448 +1,487 @@
 #include "MainComponent.h"
-#include "PluginSearchWindow.h"
+#include <BinaryData.h>
+#include <algorithm>
+#include <optional>
 
-MainComponent::MainComponent() : audioEngine(pluginManager) {
-    audioEngine.initDevices();
+namespace
+{
+    juce::var obj (std::initializer_list<std::pair<const char*, juce::var>> items)
+    {
+        auto* o = new juce::DynamicObject();
+        for (auto& p : items) o->setProperty (p.first, p.second);
+        return juce::var (o);
+    }
 
-    titleLabel.setText("VELO", juce::dontSendNotification);
-    titleLabel.setFont(juce::FontOptions(22.0f, juce::Font::bold));
-    titleLabel.setColour(juce::Label::textColourId, juce::Colour(0xfff8fafc));
-    addAndMakeVisible(titleLabel);
+    juce::var strings (const juce::StringArray& a)
+    {
+        juce::Array<juce::var> v;
+        for (auto& s : a) v.add (s);
+        return v;
+    }
 
-    subTitleLabel.setText("ZERO-LATENCY VST3 MONITOR", juce::dontSendNotification);
-    subTitleLabel.setFont(juce::FontOptions(10.5f, juce::Font::bold));
-    subTitleLabel.setColour(juce::Label::textColourId, juce::Colour(0xff38bdf8));
-    addAndMakeVisible(subTitleLabel);
+    juce::var ints (const juce::Array<int>& a)
+    {
+        juce::Array<juce::var> v;
+        for (auto i : a) v.add (i);
+        return v;
+    }
 
-    streamButton.setButtonText("MIC STREAM: OFF");
-    streamButton.setClickingTogglesState(true);
-    streamButton.setToggleState(false, juce::dontSendNotification);
-    streamButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffef4444));
-    streamButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffef4444));
-    streamButton.onClick = [this] {
-        bool active = streamButton.getToggleState();
-        audioEngine.setStreamActive(active);
-        auto col = active ? juce::Colour(0xff10b981) : juce::Colour(0xffef4444);
-        streamButton.setColour(juce::TextButton::buttonColourId, col);
-        streamButton.setColour(juce::TextButton::buttonOnColourId, col);
-        streamButton.setButtonText(active ? "MIC STREAM: LIVE" : "MIC STREAM: MUTED");
-    };
-    addAndMakeVisible(streamButton);
+    juce::String S (const juce::var& v, const char* k) { return v.getProperty (k, {}).toString(); }
+    int    I (const juce::var& v, const char* k, int d = 0)       { auto p = v.getProperty (k, {}); return p.isVoid() ? d : (int) p; }
+    double D (const juce::var& v, const char* k, double d = 0.0)  { auto p = v.getProperty (k, {}); return p.isVoid() ? d : (double) p; }
+    bool   B (const juce::var& v, const char* k)                  { return (bool) v.getProperty (k, false); }
 
-    monitorButton.setButtonText("HEADPHONES: OFF");
-    monitorButton.setClickingTogglesState(true);
-    monitorButton.setToggleState(false, juce::dontSendNotification);
-    monitorButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff475569));
-    monitorButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff475569));
-    monitorButton.onClick = [this] {
-        bool active = monitorButton.getToggleState();
-        audioEngine.setMonitorActive(active);
-        auto col = active ? juce::Colour(0xff0284c7) : juce::Colour(0xff475569);
-        monitorButton.setColour(juce::TextButton::buttonColourId, col);
-        monitorButton.setColour(juce::TextButton::buttonOnColourId, col);
-        monitorButton.setButtonText(active ? "HEADPHONES: ON" : "HEADPHONES: OFF");
-    };
-    addAndMakeVisible(monitorButton);
+    juce::String mimeFor (const juce::String& name)
+    {
+        if (name.endsWithIgnoreCase (".html")) return "text/html";
+        if (name.endsWithIgnoreCase (".css"))  return "text/css";
+        if (name.endsWithIgnoreCase (".js"))   return "text/javascript";
+        if (name.endsWithIgnoreCase (".svg"))  return "image/svg+xml";
+        if (name.endsWithIgnoreCase (".png"))  return "image/png";
+        if (name.endsWithIgnoreCase (".woff2")) return "font/woff2";
+        return "application/octet-stream";
+    }
 
-    addAndMakeVisible(routingCard);
-    addAndMakeVisible(engineCard);
-    addAndMakeVisible(rackCard);
+    // serves the embedded ui/ files to the WebView
+    std::optional<juce::WebBrowserComponent::Resource> provideResource (const juce::String& url)
+    {
+        auto path = url.upToFirstOccurrenceOf ("?", false, false).fromFirstOccurrenceOf ("/", false, false);
+        if (path.isEmpty()) path = "index.html";
 
-    auto setupLbl = [this](juce::Label& l, const juce::String& text) {
-        l.setText(text, juce::dontSendNotification);
-        l.setFont(juce::FontOptions(12.0f));
-        l.setColour(juce::Label::textColourId, juce::Colour(0xff94a3b8));
-        addAndMakeVisible(l);
-    };
+        for (int i = 0; i < BinaryData::namedResourceListSize; ++i)
+        {
+            const char* name = BinaryData::namedResourceList[i];
+            const juce::String original (BinaryData::getNamedResourceOriginalFilename (name));
+            if (juce::File::createFileWithoutCheckingPath (original).getFileName() != path) continue;
 
-    setupLbl(inputLabel, "Microphone Input (Arturia ASIO)");
-    setupLbl(monitorLabel, "Direct Monitor (Headphones Out)");
-    setupLbl(virtualLabel, "Broadcast Stream (Virtual Audio Cable)");
-    setupLbl(sampleRateLabel, "Sample Rate");
-    setupLbl(bufferSizeLabel, "ASIO Buffer Size");
+            int size = 0;
+            const char* data = BinaryData::getNamedResource (name, size);
+            if (data == nullptr) return std::nullopt;
 
-    latencyValueLabel.setText("0.0 ms", juce::dontSendNotification);
-    latencyValueLabel.setFont(juce::FontOptions(20.0f, juce::Font::bold));
-    latencyValueLabel.setJustificationType(juce::Justification::centred);
-    latencyValueLabel.setColour(juce::Label::textColourId, juce::Colour(0xff38bdf8));
-    addAndMakeVisible(latencyValueLabel);
+            juce::WebBrowserComponent::Resource r;
+            r.data.assign (reinterpret_cast<const std::byte*> (data), reinterpret_cast<const std::byte*> (data) + size);
+            r.mimeType = mimeFor (original);
+            return r;
+        }
+        return std::nullopt;
+    }
 
-    latencyDescLabel.setText("Headphones Direct ASIO Latency", juce::dontSendNotification);
-    latencyDescLabel.setFont(juce::FontOptions(10.5f));
-    latencyDescLabel.setJustificationType(juce::Justification::centred);
-    latencyDescLabel.setColour(juce::Label::textColourId, juce::Colour(0xff64748b));
-    addAndMakeVisible(latencyDescLabel);
-
-    bypassAllBtn.setButtonText("ALL FX: ON");
-    bypassAllBtn.setClickingTogglesState(true);
-    bypassAllBtn.setToggleState(false, juce::dontSendNotification);
-    bypassAllBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff059669));
-    bypassAllBtn.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff059669));
-    bypassAllBtn.onClick = [this] {
-        bool isBypassed = bypassAllBtn.getToggleState();
-        pluginManager.setGlobalBypass(isBypassed);
-        auto col = isBypassed ? juce::Colour(0xffd97706) : juce::Colour(0xff059669);
-        bypassAllBtn.setColour(juce::TextButton::buttonColourId, col);
-        bypassAllBtn.setColour(juce::TextButton::buttonOnColourId, col);
-        bypassAllBtn.setButtonText(isBypassed ? "ALL FX: BYPASS" : "ALL FX: ON");
-    };
-    addAndMakeVisible(bypassAllBtn);
-
-    scanStatusLabel.setText("Plugin engine ready", juce::dontSendNotification);
-    scanStatusLabel.setFont(juce::FontOptions(11.0f));
-    scanStatusLabel.setColour(juce::Label::textColourId, juce::Colour(0xff38bdf8));
-    addAndMakeVisible(scanStatusLabel);
-
-    scanBtn.setButtonText("Scan VST3");
-    scanBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1e293b));
-    scanBtn.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff38bdf8));
-    scanBtn.onClick = [this] {
-        scanBtn.setEnabled(false);
-        scanBtn.setButtonText("Scanning...");
-        scanStatusLabel.setText("Scanning directories...", juce::dontSendNotification);
-
-        pluginManager.startScanAsync(
-            [this](const juce::String& fileName) {
-                scanStatusLabel.setText("Found: " + fileName, juce::dontSendNotification);
-            },
-            [this](int count) {
-                scanBtn.setEnabled(true);
-                scanBtn.setButtonText("Scan VST3");
-                scanStatusLabel.setText("Active plugins: " + juce::String(count), juce::dontSendNotification);
-            }
-        );
-    };
-    addAndMakeVisible(scanBtn);
-
-    addAndMakeVisible(inputCombo);
-    addAndMakeVisible(monitorCombo);
-    addAndMakeVisible(virtualCombo);
-    addAndMakeVisible(sampleRateCombo);
-    addAndMakeVisible(bufferSizeCombo);
-
-    addAndMakeVisible(inputMeter);
-    addAndMakeVisible(monitorMeter);
-    addAndMakeVisible(virtualMeter);
-
-    addSlotBtn.setButtonText("+ Add FX Slot");
-    addSlotBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff0e1726));
-    addSlotBtn.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff38bdf8));
-    addSlotBtn.onClick = [this] { addNewSlot(); };
-    rackContainer.addAndMakeVisible(addSlotBtn);
-
-    rackViewport.setViewedComponent(&rackContainer, false);
-    rackViewport.setScrollBarsShown(true, false);
-    addAndMakeVisible(rackViewport);
-
-    auto firstSlot = std::make_unique<PluginSlotView>(
-        0,
-        [this](int idx) { choosePlugin(idx); },
-        [this](int idx) { pluginManager.openEditor(idx); },
-        [this](int idx, bool bp) { pluginManager.setSlotBypassed(idx, bp); },
-        [this](int idx) { removeSlot(idx); }
-    );
-    rackContainer.addAndMakeVisible(firstSlot.get());
-    slots.push_back(std::move(firstSlot));
-
-    inputCombo.onChange = [this] { changeInputDevice(); };
-    monitorCombo.onChange = [this] { changeMonitorDevice(); };
-    virtualCombo.onChange = [this] { changeVirtualDevice(); };
-    sampleRateCombo.onChange = [this] { changeSampleRate(); };
-    bufferSizeCombo.onChange = [this] { changeBufferSize(); };
-
-    pluginManager.loadCachedPlugins();
-    int cachedCount = pluginManager.getPluginList().getTypes().size();
-    if (cachedCount > 0)
-        scanStatusLabel.setText("Active plugins: " + juce::String(cachedCount), juce::dontSendNotification);
-
-    refreshDeviceLists();
-
-    setSize(500, 830);
-    startTimerHz(30);
+    double gainFromDb (double db, double minDb) { return db <= minDb + 0.05 ? 0.0 : juce::Decibels::decibelsToGain (db); }
 }
 
-MainComponent::~MainComponent() {
+//==============================================================================
+MainComponent::MainComponent() : pluginManager (settings), audioEngine (pluginManager)
+{
+    pluginManager.loadCache();
+    const auto crashed = pluginManager.handlePreviousCrash();
+
+    // --- web UI --------------------------------------------------------------------
+    using Opts = juce::WebBrowserComponent::Options;
+    auto webOptions = Opts()
+        .withBackend (Opts::Backend::webview2)
+        .withWinWebView2Options (Opts::WinWebView2()
+                                     .withUserDataFolder (Settings::getDataDir().getChildFile ("webview"))
+                                     .withStatusBarDisabled()
+                                     .withBackgroundColour (juce::Colour (0xff070b16)))
+        .withNativeIntegrationEnabled()
+        .withKeepPageLoadedWhenBrowserIsHidden()
+        .withResourceProvider (&provideResource)
+        .withEventListener ("cmd", [this] (juce::var v) { handleCommand (v); });
+
+    web = std::make_unique<juce::WebBrowserComponent> (webOptions);
+    addAndMakeVisible (*web);
+    web->goToURL (juce::WebBrowserComponent::getResourceProviderRoot());
+    setSize (560, 900);
+
+    // --- audio ----------------------------------------------------------------------
+    const auto warnings = audioEngine.start (settings.getString ("mainDevice"), settings.getInt ("inCh", 0),
+                                             settings.getInt ("outPair", 0), settings.getInt ("mainBuffer", 0),
+                                             settings.getString ("vType", "Windows Audio"), settings.getString ("vDevice"),
+                                             settings.getInt ("vBuffer", 0));
+    audioEngine.addChangeListener (this);
+
+    audioEngine.setInputGain ((float) gainFromDb (settings.getDouble ("gainIn", 0.0), -60.0));
+    audioEngine.setMonitorGain ((float) gainFromDb (settings.getDouble ("gainMon", 0.0), -60.0));
+    audioEngine.setVirtualGain ((float) gainFromDb (settings.getDouble ("gainVirt", 0.0), -60.0));
+    audioEngine.setStreamActive (settings.getBool ("mic", false));
+    audioEngine.setMonitorActive (settings.getBool ("mon", false));
+    pluginManager.setGlobalBypass (settings.getBool ("fxBypass", false));
+
+    if (crashed.isNotEmpty())
+        startupMessage << "\"" << crashed << "\" crashed Velo last time and has been disabled.\n";
+    startupMessage << warnings;
+
+    // --- restore effect chain (async, one plugin at a time) ------------------------
+    auto savedChain = settings.getXml ("chain");
+    if (savedChain != nullptr && savedChain->getNumChildElements() > 0)
+    {
+        restoring = true;
+        auto safe = juce::Component::SafePointer<MainComponent> (this);
+        juce::Timer::callAfterDelay (300, [safe, chainXml = std::shared_ptr<juce::XmlElement> (savedChain.release())]
+        {
+            if (safe == nullptr) return;
+            const double sr = safe->audioEngine.getMainSampleRate() > 0 ? safe->audioEngine.getMainSampleRate() : 48000.0;
+            const int block = safe->audioEngine.getMainBufferSize() > 0 ? safe->audioEngine.getMainBufferSize() : 512;
+            safe->pluginManager.restoreChainAsync (*chainXml, sr, block,
+                [safe] { if (safe != nullptr) safe->sendChain(); },
+                [safe] (const juce::StringArray& w)
+                {
+                    if (safe == nullptr) return;
+                    safe->restoring = false;
+                    if (safe->pluginManager.getNumSlots() == 0) safe->pluginManager.addSlot();
+                    safe->sendChain();
+                    if (w.size() > 0) safe->toast ("warn", w.joinIntoString ("\n"));
+                });
+        });
+    }
+    else pluginManager.addSlot();
+
+    if (pluginManager.getNumPlugins() == 0)
+    {
+        auto safe = juce::Component::SafePointer<MainComponent> (this);
+        juce::Timer::callAfterDelay (800, [safe] { if (safe != nullptr && safe->pluginManager.getNumPlugins() == 0) safe->startScan (false); });
+    }
+
+    startTimerHz (30);
+}
+
+MainComponent::~MainComponent()
+{
     stopTimer();
+    audioEngine.removeChangeListener (this);
+    saveSession();
+    web.reset();
+    audioEngine.shutdown();
 }
 
-void MainComponent::paint(juce::Graphics& g) {
-    g.fillAll(juce::Colour(0xff060a12));
+void MainComponent::resized()
+{
+    if (web != nullptr) web->setBounds (getLocalBounds());
 }
 
-void MainComponent::addNewSlot() {
-    int idx = pluginManager.addSlot();
-    auto newSlot = std::make_unique<PluginSlotView>(
-        idx,
-        [this](int i) { choosePlugin(i); },
-        [this](int i) { pluginManager.openEditor(i); },
-        [this](int i, bool bp) { pluginManager.setSlotBypassed(i, bp); },
-        [this](int i) { removeSlot(i); }
-    );
-    rackContainer.addAndMakeVisible(newSlot.get());
-    slots.push_back(std::move(newSlot));
-    rebuildRackLayout();
+//== bridge ====================================================================
+void MainComponent::emit (const char* id, const juce::var& payload)
+{
+    if (web != nullptr && uiReady) web->emitEventIfBrowserIsVisible (id, payload);
 }
 
-void MainComponent::removeSlot(int slotIdx) {
-    if (slots.size() <= 1) {
-        pluginManager.clearPluginInSlot(0);
-        slots[0]->setPluginName("");
+void MainComponent::toast (const char* kind, const juce::String& text)
+{
+    if (text.trim().isEmpty()) return;
+    juce::Logger::writeToLog (juce::String (kind) + ": " + text);
+    emit ("toast", obj ({ { "kind", kind }, { "text", text.trim() } }));
+}
+
+void MainComponent::sendAll()
+{
+    sendSettings(); sendDevices(); sendChain(); sendPlugins(); sendScan(); sendStats();
+}
+
+void MainComponent::sendSettings()
+{
+    emit ("settings", obj ({
+        { "mic", settings.getBool ("mic", false) }, { "mon", settings.getBool ("mon", false) },
+        { "fx", ! settings.getBool ("fxBypass", false) },
+        { "gainIn", settings.getDouble ("gainIn", 0.0) }, { "gainMon", settings.getDouble ("gainMon", 0.0) },
+        { "gainVirt", settings.getDouble ("gainVirt", 0.0) } }));
+}
+
+void MainComponent::sendDevices()
+{
+    deviceUiDirty = false;
+    const auto ins = audioEngine.getInputChannelNames();
+    const auto outs = audioEngine.getOutputPairNames();
+
+    auto iface = obj ({
+        { "list", strings (audioEngine.getMainDevices()) }, { "current", audioEngine.getMainDeviceName() },
+        { "type", audioEngine.getMainTypeName() },
+        { "ins", strings (ins) }, { "inSel", juce::jlimit (0, juce::jmax (0, ins.size() - 1), settings.getInt ("inCh", 0)) },
+        { "outs", strings (outs) }, { "outSel", juce::jlimit (0, juce::jmax (0, outs.size() - 1), settings.getInt ("outPair", 0)) },
+        { "sizes", ints (audioEngine.getMainBufferSizes()) }, { "size", audioEngine.getMainBufferSize() },
+        { "rate", audioEngine.getMainSampleRate() }, { "hasPanel", audioEngine.hasControlPanel() } });
+
+    auto virt = obj ({
+        { "types", strings (audioEngine.getVirtualTypes()) }, { "type", audioEngine.getVirtualTypeName() },
+        { "list", strings (audioEngine.getVirtualDevices()) }, { "current", audioEngine.getVirtualDeviceName() },
+        { "sizes", ints (audioEngine.getVirtualBufferSizes()) }, { "size", audioEngine.getVirtualBufferSize() },
+        { "rate", audioEngine.getVirtualLatency().rate }, { "running", audioEngine.isVirtualRunning() } });
+
+    emit ("devices", obj ({ { "iface", iface }, { "virt", virt } }));
+}
+
+void MainComponent::sendChain()
+{
+    juce::Array<juce::var> a;
+    for (int i = 0; i < pluginManager.getNumSlots(); ++i)
+    {
+        const int uid = pluginManager.getUidAt (i);
+        const bool loading = std::find (loadingUids.begin(), loadingUids.end(), uid) != loadingUids.end();
+        a.add (obj ({ { "uid", uid }, { "name", pluginManager.getSlotName (uid) },
+                      { "bypassed", pluginManager.isSlotBypassed (uid) }, { "loading", loading } }));
+    }
+    emit ("chain", a);
+}
+
+void MainComponent::sendPlugins()
+{
+    juce::Array<juce::var> a;
+    for (auto& d : pluginManager.getPluginTypes())
+        a.add (obj ({ { "id", d.createIdentifierString() }, { "n", d.name }, { "m", d.manufacturerName },
+                      { "c", d.category }, { "f", d.pluginFormatName }, { "i", d.isInstrument },
+                      { "u", pluginManager.getUsage (d.createIdentifierString()) } }));
+    emit ("plugins", a);
+}
+
+void MainComponent::sendScan()
+{
+    emit ("scan", obj ({ { "running", scanState.running }, { "cancelled", scanState.cancelled },
+                         { "done", scanState.done }, { "total", scanState.total }, { "failed", scanState.failed },
+                         { "current", scanState.current }, { "count", pluginManager.getNumPlugins() },
+                         { "folders", strings (pluginManager.getScanFolders()) } }));
+}
+
+void MainComponent::sendStats()
+{
+    const auto hp = audioEngine.getHeadphoneLatency();
+    const auto v = audioEngine.getVirtualLatency();
+
+    const bool ok = audioEngine.isMainRunning();
+
+    emit ("stats", obj ({
+        { "ok", ok }, { "type", audioEngine.getMainTypeName() },
+        { "cpu", audioEngine.getCpuUsage() }, { "bad", audioEngine.getBadBlockCount() },
+        { "hp", obj ({ { "valid", hp.valid }, { "est", hp.estimated }, { "in", hp.inMs }, { "out", hp.outMs }, { "fx", hp.fxMs },
+                       { "total", hp.totalMs }, { "buf", hp.bufferSamples }, { "rate", hp.rate } }) },
+        { "v", obj ({ { "valid", v.valid }, { "in", v.inMs }, { "fx", v.fxMs }, { "queue", v.queueMs }, { "dev", v.deviceMs },
+                      { "total", v.totalMs }, { "buf", v.bufferSamples }, { "rate", v.rate },
+                      { "under", v.underruns }, { "over", v.overruns } }) } }));
+}
+
+//== commands ==================================================================
+void MainComponent::handleCommand (const juce::var& v)
+{
+    const auto c = S (v, "c");
+
+    if (c == "ready")
+    {
+        uiReady = true;
+        wasShowing = true;
+        sendAll();
+        if (startupMessage.trim().isNotEmpty()) { toast ("warn", startupMessage); startupMessage.clear(); }
+    }
+    else if (c == "switch")
+    {
+        const auto k = S (v, "k");
+        const bool on = B (v, "v");
+        if (k == "mic")      { audioEngine.setStreamActive (on);  settings.setBool ("mic", on); }
+        else if (k == "mon") { audioEngine.setMonitorActive (on); settings.setBool ("mon", on); }
+        else if (k == "fx")  { pluginManager.setGlobalBypass (! on); settings.setBool ("fxBypass", ! on); }
+    }
+    else if (c == "gain")
+    {
+        const auto k = S (v, "k");
+        const double db = D (v, "db");
+        if (k == "in")        { audioEngine.setInputGain ((float) gainFromDb (db, -60.0));   settings.setDouble ("gainIn", db); }
+        else if (k == "mon")  { audioEngine.setMonitorGain ((float) gainFromDb (db, -60.0)); settings.setDouble ("gainMon", db); }
+        else if (k == "virt") { audioEngine.setVirtualGain ((float) gainFromDb (db, -60.0)); settings.setDouble ("gainVirt", db); }
+    }
+    else if (c == "iface")
+    {
+        const auto name = S (v, "name");
+        if (name.isEmpty()) return;
+        const auto err = audioEngine.openMainDevice (name, 0, 0, 0);
+        settings.setString ("mainDevice", name);
+        settings.setInt ("inCh", 0); settings.setInt ("outPair", 0); settings.setInt ("mainBuffer", 0);
+        if (err.isNotEmpty()) toast ("error", name + ": " + err + "\nIs another program using this device?");
+        sendDevices(); sendStats();
+    }
+    else if (c == "channels")
+    {
+        const int inCh = I (v, "inCh"), outPair = I (v, "outPair");
+        settings.setInt ("inCh", inCh); settings.setInt ("outPair", outPair);
+        const auto err = audioEngine.openMainDevice (audioEngine.getMainDeviceName(), inCh, outPair, settings.getInt ("mainBuffer", 0));
+        if (err.isNotEmpty()) toast ("error", err);
+        sendDevices(); sendStats();
+    }
+    else if (c == "hpBuffer")
+    {
+        const int size = I (v, "size");
+        if (size <= 0) return;
+        settings.setInt ("mainBuffer", size);
+        const auto err = audioEngine.openMainDevice (audioEngine.getMainDeviceName(), settings.getInt ("inCh", 0),
+                                                     settings.getInt ("outPair", 0), size);
+        if (err.isNotEmpty()) toast ("error", err);
+        sendDevices(); sendStats();
+    }
+    else if (c == "panel")          openControlPanel();
+    else if (c == "defaults")
+    {
+        toast ("error", audioEngine.reopenMainWithDriverDefaults());
+        sendDevices();
+    }
+    else if (c == "rescanDevices")
+    {
+        audioEngine.getMainDevices (true);
+        audioEngine.getVirtualDevices (true);
+        sendDevices();
+    }
+    else if (c == "virtual")        applyVirtual (S (v, "type"), S (v, "device"), I (v, "size"));
+    else if (c == "scan")           startScan (B (v, "full"));
+    else if (c == "scanStop")       { pluginManager.cancelScan(); }
+    else if (c == "addFolder")
+    {
+        auto chooser = std::make_shared<juce::FileChooser> ("Choose a folder with VST3 plugins");
+        auto safe = juce::Component::SafePointer<MainComponent> (this);
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                              [safe, chooser] (const juce::FileChooser& fc)
+                              {
+                                  if (safe == nullptr || ! fc.getResult().isDirectory()) return;
+                                  safe->pluginManager.addScanFolder (fc.getResult());
+                                  safe->startScan (false);
+                              });
+    }
+    else if (c == "removeFolder")   { pluginManager.removeScanFolder (S (v, "path")); sendScan(); }
+    else if (c == "addSlot")        { pluginManager.addSlot(); sendChain(); }
+    else if (c == "removeSlot")
+    {
+        const int uid = I (v, "uid", -1);
+        if (pluginManager.getNumSlots() <= 1) pluginManager.clearSlot (uid);
+        else pluginManager.removeSlot (uid);
+        sendChain(); saveSession();
+    }
+    else if (c == "moveSlot")       { pluginManager.moveSlot (I (v, "uid", -1), I (v, "index")); sendChain(); saveSession(); }
+    else if (c == "bypass")         { pluginManager.setSlotBypassed (I (v, "uid", -1), B (v, "v")); sendChain(); saveSession(); }
+    else if (c == "editor")         pluginManager.openEditor (I (v, "uid", -1));
+    else if (c == "load")
+    {
+        const auto id = S (v, "id");
+        for (auto& d : pluginManager.getPluginTypes())
+            if (d.createIdentifierString() == id) { startPluginLoad (I (v, "uid", -1), d); return; }
+        toast ("error", "That plugin is no longer in the list. Rescan and try again.");
+    }
+}
+
+void MainComponent::applyVirtual (const juce::String& type, juce::String device, int size)
+{
+    if (type.isEmpty()) return;
+
+    if (device.isEmpty())
+    {
+        // new driver type: open it, then pick a sensible default device
+        audioEngine.openVirtualDevice (type, {}, 0);
+        auto devs = audioEngine.getVirtualDevices (true);
+        for (auto& d : devs)
+            if (d.containsIgnoreCase ("cable") || d.containsIgnoreCase ("virtual")) { device = d; break; }
+        if (device.isEmpty() && ! devs.isEmpty()) device = devs[0];
+        size = 0;
+    }
+
+    if (device.isNotEmpty())
+    {
+        const auto err = audioEngine.openVirtualDevice (type, device, juce::jmax (0, size));
+        if (err.isNotEmpty()) toast ("error", err);
+        settings.setString ("vType", type);
+        settings.setString ("vDevice", device);
+        settings.setInt ("vBuffer", juce::jmax (0, size));
+    }
+    sendDevices(); sendStats();
+}
+
+void MainComponent::openControlPanel()
+{
+    if (! audioEngine.showControlPanel())
+    {
+        toast ("warn", "This driver has no control panel. Open the interface's own utility (for example MiniFuse Control Center) instead.");
         return;
     }
-
-    pluginManager.removeSlot(slotIdx);
-    slots.erase(slots.begin() + slotIdx);
-
-    for (int i = 0; i < (int)slots.size(); ++i)
-        slots[i]->updateSlotIndex(i);
-
-    rebuildRackLayout();
-}
-
-void MainComponent::rebuildRackLayout() {
-    int w = rackViewport.getWidth() > 0 ? rackViewport.getWidth() - 10 : 440;
-    int h = (int)slots.size() * 38 + 44;
-    rackContainer.setSize(w, h);
-
-    int y = 0;
-    for (auto& s : slots) {
-        s->setBounds(0, y, w, 34);
-        y += 38;
-    }
-    addSlotBtn.setBounds(0, y, w, 32);
-}
-
-void MainComponent::resized() {
-    auto area = getLocalBounds().reduced(16);
-
-    auto topHeader = area.removeFromTop(38);
-    titleLabel.setBounds(topHeader.removeFromLeft(70));
-    subTitleLabel.setBounds(topHeader.removeFromLeft(200));
-
-    auto topBtns = area.removeFromTop(40);
-    streamButton.setBounds(topBtns.removeFromLeft(topBtns.getWidth() / 2 - 5));
-    topBtns.removeFromLeft(10);
-    monitorButton.setBounds(topBtns);
-    area.removeFromTop(14);
-
-    routingCard.setBounds(area.removeFromTop(206));
-    auto rArea = routingCard.getBounds().reduced(14);
-    rArea.removeFromTop(16);
-
-    auto layoutRow = [&rArea](juce::Label& lbl, juce::ComboBox& box, LevelMeter& meter) {
-        lbl.setBounds(rArea.removeFromTop(16));
-        rArea.removeFromTop(2);
-        box.setBounds(rArea.removeFromTop(26));
-        rArea.removeFromTop(3);
-        meter.setBounds(rArea.removeFromTop(4));
-        rArea.removeFromTop(8);
-    };
-
-    layoutRow(inputLabel, inputCombo, inputMeter);
-    layoutRow(monitorLabel, monitorCombo, monitorMeter);
-    layoutRow(virtualLabel, virtualCombo, virtualMeter);
-
-    area.removeFromTop(12);
-
-    engineCard.setBounds(area.removeFromTop(106));
-    auto eArea = engineCard.getBounds().reduced(14);
-    eArea.removeFromTop(16);
-
-    auto leftCol = eArea.removeFromLeft(250);
-    eArea.removeFromLeft(14);
-
-    auto row1 = leftCol.removeFromTop(32);
-    sampleRateLabel.setBounds(row1.removeFromLeft(90));
-    sampleRateCombo.setBounds(row1);
-    leftCol.removeFromTop(6);
-
-    auto row2 = leftCol.removeFromTop(32);
-    bufferSizeLabel.setBounds(row2.removeFromLeft(90));
-    bufferSizeCombo.setBounds(row2);
-
-    latencyValueLabel.setBounds(eArea.removeFromTop(32));
-    latencyDescLabel.setBounds(eArea.removeFromTop(18));
-
-    area.removeFromTop(12);
-
-    rackCard.setBounds(area);
-    auto rcArea = rackCard.getBounds().reduced(14);
-    rcArea.removeFromTop(14);
-
-    auto rackControlRow = rcArea.removeFromTop(26);
-    scanBtn.setBounds(rackControlRow.removeFromRight(95));
-    rackControlRow.removeFromRight(8);
-    bypassAllBtn.setBounds(rackControlRow.removeFromRight(105));
-    scanStatusLabel.setBounds(rackControlRow);
-
-    rcArea.removeFromTop(8);
-    rackViewport.setBounds(rcArea);
-    rebuildRackLayout();
-}
-
-void MainComponent::choosePlugin(int slotIdx) {
-    if (pluginManager.getPluginList().getTypes().isEmpty()) {
-        juce::AlertWindow::showMessageBoxAsync(
-            juce::AlertWindow::WarningIcon, "VST3 Plugins", "No plugins found yet. Click 'Scan VST3' to discover your plugins.");
-        return;
-    }
-
-    new PluginSearchWindow(pluginManager.getPluginList(), [this, slotIdx](const juce::PluginDescription& desc) {
-        auto setup = audioEngine.getMainManager().getAudioDeviceSetup();
-        if (pluginManager.loadPlugin(slotIdx, desc, setup.sampleRate, setup.bufferSize))
-            slots[slotIdx]->setPluginName(desc.name);
+    // the driver may change buffer size / sample rate: adopt its settings afterwards
+    settings.setInt ("mainBuffer", 0);
+    auto safe = juce::Component::SafePointer<MainComponent> (this);
+    juce::Timer::callAfterDelay (1200, [safe]
+    {
+        if (safe == nullptr) return;
+        safe->audioEngine.reopenMainWithDriverDefaults();
+        safe->deviceUiDirty = true;
     });
 }
 
-void MainComponent::refreshDeviceLists() {
-    if (auto* asio = audioEngine.getMainManager().getCurrentDeviceTypeObject()) {
-        asio->scanForDevices();
-        bool isAsio = (asio->getTypeName() == "ASIO");
+void MainComponent::startScan (bool full)
+{
+    if (scanState.running) return;
+    scanState = {};
+    scanState.running = true;
+    sendScan();
 
-        inputCombo.clear(juce::dontSendNotification);
-        monitorCombo.clear(juce::dontSendNotification);
-
-        if (isAsio) {
-            auto devs = asio->getDeviceNames();
-            for (int i = 0; i < devs.size(); ++i) {
-                inputCombo.addItem(devs[i] + " - Mic In 1", i + 1);
-                monitorCombo.addItem(devs[i] + " - Out 1/2", i + 1);
-            }
-
-            auto current = audioEngine.getMainManager().getCurrentAudioDevice();
-            if (current != nullptr) {
-                int idx = devs.indexOf(current->getName()) + 1;
-                inputCombo.setSelectedId(idx, juce::dontSendNotification);
-                monitorCombo.setSelectedId(idx, juce::dontSendNotification);
-            } else if (!devs.isEmpty()) {
-                inputCombo.setSelectedId(1, juce::dontSendNotification);
-                monitorCombo.setSelectedId(1, juce::dontSendNotification);
-            }
-        } else {
-            auto inDevs = asio->getDeviceNames(true);
-            auto outDevs = asio->getDeviceNames(false);
-
-            for (int i = 0; i < inDevs.size(); ++i)
-                inputCombo.addItem(inDevs[i], i + 1);
-
-            for (int i = 0; i < outDevs.size(); ++i)
-                monitorCombo.addItem(outDevs[i], i + 1);
-
-            auto setup = audioEngine.getMainManager().getAudioDeviceSetup();
-            int inIdx = inDevs.indexOf(setup.inputDeviceName) + 1;
-            int outIdx = outDevs.indexOf(setup.outputDeviceName) + 1;
-            inputCombo.setSelectedId(inIdx > 0 ? inIdx : 1, juce::dontSendNotification);
-            monitorCombo.setSelectedId(outIdx > 0 ? outIdx : 1, juce::dontSendNotification);
-        }
-
-        updateRatesAndBuffers();
-    }
-
-    if (auto* winType = audioEngine.getVirtualManager().getCurrentDeviceTypeObject()) {
-        winType->scanForDevices();
-        auto outDevices = winType->getDeviceNames(false);
-
-        virtualCombo.clear(juce::dontSendNotification);
-        for (int i = 0; i < outDevices.size(); ++i) {
-            virtualCombo.addItem(outDevices[i], i + 1);
-            if (outDevices[i].containsIgnoreCase("cable") || outDevices[i].containsIgnoreCase("virtual"))
-                virtualCombo.setSelectedId(i + 1, juce::dontSendNotification);
-        }
-        if (virtualCombo.getSelectedId() == 0 && !outDevices.isEmpty())
-            virtualCombo.setSelectedId(1, juce::dontSendNotification);
-
-        changeVirtualDevice();
-    }
+    auto safe = juce::Component::SafePointer<MainComponent> (this);
+    pluginManager.startScan (full,
+        [safe] (const velo::ScanProgress& p)
+        {
+            if (safe == nullptr) return;
+            safe->scanState.done = p.done; safe->scanState.total = p.total;
+            safe->scanState.failed = p.failed; safe->scanState.current = p.current;
+            safe->sendScan();
+        },
+        [safe] (const velo::ScanResult& r)
+        {
+            if (safe == nullptr) return;
+            safe->scanState.running = false;
+            safe->scanState.cancelled = r.cancelled;
+            safe->scanState.failed = r.failed;
+            if (r.failed > 0 && ! r.cancelled)
+                juce::Logger::writeToLog ("Skipped plugins: " + r.failedNames.joinIntoString (", "));
+            safe->sendScan();
+            safe->sendPlugins();
+        });
 }
 
-void MainComponent::updateRatesAndBuffers() {
-    if (auto* dev = audioEngine.getMainManager().getCurrentAudioDevice()) {
-        sampleRateCombo.clear(juce::dontSendNotification);
-        for (auto rate : dev->getAvailableSampleRates())
-            sampleRateCombo.addItem(juce::String((int)rate) + " Hz", (int)rate);
-        sampleRateCombo.setSelectedId((int)dev->getCurrentSampleRate(), juce::dontSendNotification);
+void MainComponent::startPluginLoad (int uid, const juce::PluginDescription& desc)
+{
+    loadingUids.push_back (uid);
+    sendChain();
 
-        bufferSizeCombo.clear(juce::dontSendNotification);
-        for (auto buf : dev->getAvailableBufferSizes())
-            bufferSizeCombo.addItem(juce::String(buf) + " spl", buf);
-        bufferSizeCombo.setSelectedId(dev->getCurrentBufferSizeSamples(), juce::dontSendNotification);
+    auto safe = juce::Component::SafePointer<MainComponent> (this);
+    // small delay so the "Loading" state reaches the screen before the (blocking) plugin instantiation
+    juce::Timer::callAfterDelay (60, [safe, uid, desc]
+    {
+        if (safe == nullptr) return;
+        const double sr = safe->audioEngine.getMainSampleRate() > 0 ? safe->audioEngine.getMainSampleRate() : 48000.0;
+        const int block = safe->audioEngine.getMainBufferSize() > 0 ? safe->audioEngine.getMainBufferSize() : 512;
 
-        updateHeadphonesLatency();
-    }
+        safe->pluginManager.loadPluginAsync (uid, desc, sr, block,
+            [safe, uid, desc] (bool ok, const juce::String& message)
+            {
+                if (safe == nullptr) return;
+                safe->loadingUids.erase (std::remove (safe->loadingUids.begin(), safe->loadingUids.end(), uid), safe->loadingUids.end());
+                safe->sendChain();
+                if (ok) { safe->pluginManager.noteUsed (desc); safe->saveSession(); safe->sendPlugins(); }
+                else safe->toast ("error", "Could not load \"" + desc.name + "\":\n" + message);
+            });
+    });
 }
 
-void MainComponent::updateHeadphonesLatency() {
-    if (auto* dev = audioEngine.getMainManager().getCurrentAudioDevice()) {
-        double rate = dev->getCurrentSampleRate();
-        int inLat = dev->getInputLatencyInSamples();
-        int outLat = dev->getOutputLatencyInSamples();
-        int bufSize = dev->getCurrentBufferSizeSamples();
-
-        int totalHwSamples = inLat + outLat;
-        if (totalHwSamples <= 0)
-            totalHwSamples = bufSize * 2;
-
-        double ms = rate > 0.0 ? (totalHwSamples * 1000.0 / rate) : 0.0;
-
-        latencyValueLabel.setText(juce::String(ms, 1) + " ms", juce::dontSendNotification);
-        latencyDescLabel.setText(juce::String(bufSize) + " spl @ " + juce::String((int)rate) + " Hz (ASIO Direct)", juce::dontSendNotification);
-    }
+void MainComponent::saveSession()
+{
+    if (restoring) return;          // never overwrite the saved chain with a half-restored one
+    if (auto chain = pluginManager.saveChainState())
+        settings.setXml ("chain", chain.get());
+    settings.save();
 }
 
-void MainComponent::changeInputDevice() {
-    auto devName = inputCombo.getText();
-    if (devName.isEmpty()) return;
+//==============================================================================
+void MainComponent::timerCallback()
+{
+    ++tick;
 
-    if (devName.contains(" - Mic In"))
-        devName = devName.upToFirstOccurrenceOf(" - Mic In", false, false);
+    // events are dropped while the window is minimised: resend everything when it comes back
+    const bool showing = web != nullptr && web->isShowing();
+    if (showing && ! wasShowing && uiReady) sendAll();
+    wasShowing = showing;
+    if (! showing) return;
 
-    auto setup = audioEngine.getMainManager().getAudioDeviceSetup();
-    setup.inputDeviceName = devName;
-    setup.outputDeviceName = devName;
-    audioEngine.getMainManager().setAudioDeviceSetup(setup, true);
-    updateRatesAndBuffers();
-}
+    emit ("meters", obj ({ { "i", audioEngine.getInputPeak() }, { "m", audioEngine.getMonitorPeak() },
+                           { "v", audioEngine.getVirtualPeak() } }));
 
-void MainComponent::changeMonitorDevice() {
-    changeInputDevice();
-}
-
-void MainComponent::changeVirtualDevice() {
-    auto devName = virtualCombo.getText();
-    if (devName.isEmpty()) return;
-    auto setup = audioEngine.getVirtualManager().getAudioDeviceSetup();
-    setup.outputDeviceName = devName;
-    setup.inputDeviceName = "";
-    audioEngine.getVirtualManager().setAudioDeviceSetup(setup, true);
-}
-
-void MainComponent::changeSampleRate() {
-    int rate = sampleRateCombo.getSelectedId();
-    if (rate <= 0) return;
-    auto setup = audioEngine.getMainManager().getAudioDeviceSetup();
-    setup.sampleRate = rate;
-    audioEngine.getMainManager().setAudioDeviceSetup(setup, true);
-    updateHeadphonesLatency();
-}
-
-void MainComponent::changeBufferSize() {
-    int size = bufferSizeCombo.getSelectedId();
-    if (size <= 0) return;
-    auto setup = audioEngine.getMainManager().getAudioDeviceSetup();
-    setup.bufferSize = size;
-    audioEngine.getMainManager().setAudioDeviceSetup(setup, true);
-    updateHeadphonesLatency();
-}
-
-void MainComponent::timerCallback() {
-    auto decay = [](float val, float& cur, LevelMeter& m) {
-        if (val > cur) cur = val;
-        else cur *= 0.82f;
-        if (cur < 0.001f) cur = 0.0f;
-        m.setLevel(cur);
-    };
-
-    decay(audioEngine.getInputPeak(), curInputLevel, inputMeter);
-    decay(audioEngine.getMonitorPeak(), curMonitorLevel, monitorMeter);
-    decay(audioEngine.getVirtualPeak(), curVirtualLevel, virtualMeter);
+    if (deviceUiDirty) { sendDevices(); sendStats(); }
+    if (tick % 8 == 0) sendStats();
+    if (tick % 1800 == 0) saveSession();          // autosave every minute
 }

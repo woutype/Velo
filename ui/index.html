@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Velo</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="orbs" aria-hidden="true"><i></i><i></i><i></i></div>
+
+<div id="app">
+  <header class="top">
+    <div class="brand">
+      <h1>Velo</h1>
+      <p>Live VST3 monitor and virtual cable</p>
+    </div>
+    <div id="status" class="pill" title="Audio interface"><span class="dot"></span><span class="txt">Starting</span></div>
+  </header>
+
+  <nav class="seg" id="tabs" role="tablist" aria-label="Pages">
+    <i class="thumb"></i>
+    <button role="tab" data-p="0">Live</button>
+    <button role="tab" data-p="1">Devices</button>
+    <button role="tab" data-p="2">Plugins</button>
+  </nav>
+
+  <main>
+    <!-- LIVE -->
+    <section class="page" id="p0">
+      <div class="card hero"><canvas id="flow" role="img" aria-label="Signal path: microphone, effects, then headphones and virtual cable"></canvas></div>
+
+      <div class="toggles">
+        <button class="tile" data-sw="mic" role="switch" aria-checked="false">
+          <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+          <span class="t">Microphone</span><span class="s">Muted</span><span class="sw"></span>
+        </button>
+        <button class="tile" data-sw="mon" role="switch" aria-checked="false">
+          <svg viewBox="0 0 24 24"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4" height="6" rx="2"/><rect x="17" y="14" width="4" height="6" rx="2"/></svg>
+          <span class="t">Monitor</span><span class="s">Off</span><span class="sw"></span>
+        </button>
+        <button class="tile" data-sw="fx" role="switch" aria-checked="true">
+          <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>
+          <span class="t">Effects</span><span class="s">Active</span><span class="sw"></span>
+        </button>
+      </div>
+
+      <div class="card" id="levels">
+        <h2>Levels</h2>
+        <div class="strip" data-k="in"   data-min="-60" data-max="24"><div class="row"><label>Microphone gain</label><output>0.0 dB</output></div><input type="range" min="-60" max="24" step="0.1" value="0" aria-label="Microphone gain"><div class="meter"><b class="fill"></b><u class="peak"></u></div></div>
+        <div class="strip" data-k="mon"  data-min="-60" data-max="6"><div class="row"><label>Headphones volume</label><output>0.0 dB</output></div><input type="range" min="-60" max="6" step="0.1" value="0" aria-label="Headphones volume"><div class="meter"><b class="fill"></b><u class="peak"></u></div></div>
+        <div class="strip" data-k="virt" data-min="-60" data-max="6"><div class="row"><label>Virtual cable level</label><output>0.0 dB</output></div><input type="range" min="-60" max="6" step="0.1" value="0" aria-label="Virtual cable level"><div class="meter"><b class="fill"></b><u class="peak"></u></div></div>
+      </div>
+
+      <div class="grid" id="lat"></div>
+      <div class="chips" id="stats"></div>
+    </section>
+
+    <!-- DEVICES -->
+    <section class="page" id="p1" hidden>
+      <div class="card">
+        <div class="head"><h2>Audio interface</h2><button class="btn blue" id="btnPanel">Control Center</button></div>
+        <label class="lbl">Interface</label>
+        <div class="select" id="selIface"></div>
+        <div class="two">
+          <div><label class="lbl">Microphone input</label><div class="select" id="selIn"></div></div>
+          <div><label class="lbl">Headphones output</label><div class="select" id="selOut"></div></div>
+        </div>
+        <label class="lbl">Buffer size</label>
+        <div class="bufs" id="bufHp"></div>
+        <p class="hint" id="hintHp"></p>
+      </div>
+
+      <div class="card">
+        <div class="head"><h2>Virtual cable</h2><button class="btn" id="btnRefresh">Refresh</button></div>
+        <label class="lbl">Driver</label>
+        <div class="seg small" id="segVType"><i class="thumb"></i></div>
+        <label class="lbl">Output device</label>
+        <div class="select" id="selVDev"></div>
+        <label class="lbl">Buffer size</label>
+        <div class="bufs" id="bufV"></div>
+        <p class="hint">A smaller buffer means less delay but needs a faster PC. Clock drift between the two devices is corrected automatically.</p>
+      </div>
+    </section>
+
+    <!-- PLUGINS -->
+    <section class="page" id="p2" hidden>
+      <div class="card">
+        <div class="head"><h2>Effect chain</h2>
+          <div class="acts">
+            <button class="btn blue" id="btnScan">Scan</button>
+            <button class="btn icon" id="btnMore" aria-label="More scan options"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>
+          </div>
+        </div>
+        <div id="scanbar" class="scanbar"></div>
+        <div id="chain" class="chain"></div>
+        <button class="add" id="btnAdd"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add effect slot</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- plugin picker -->
+<div id="picker" class="sheet" hidden>
+  <div class="panel" role="dialog" aria-label="Choose an effect">
+    <div class="sbox"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg><input id="q" type="text" placeholder="Search effects, e.g. pro q, waves, reverb" autocomplete="off" spellcheck="false"><button class="btn icon" id="qClose" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+    <div class="seg small" id="segFilter"><i class="thumb"></i><button data-f="0">Effects</button><button data-f="1">Instruments</button><button data-f="2">All</button></div>
+    <div class="count" id="qCount"></div>
+    <div class="plist" id="plist" role="listbox"></div>
+  </div>
+</div>
+
+<div id="menu" class="menu" hidden></div>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
